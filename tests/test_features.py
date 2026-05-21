@@ -135,3 +135,183 @@ def test_num_services_range(splits):
     X_train, *_ = splits
     assert X_train['num_services'].between(0, 6).all(), \
         "num_services out of expected range 0-6"
+    
+
+# ── Edge case tests ───────────────────────────────────────────────────────────
+
+def test_total_charges_null_fix(splits):
+    """
+    The 11 TotalCharges whitespace rows must be 0.0 after loading,
+    not NaN. Verifies load_raw_data() handles the edge case correctly.
+    """
+    from src.features import load_raw_data
+    df_raw = load_raw_data('data/raw/telco_churn.csv')
+    assert df_raw['TotalCharges'].isnull().sum() == 0, \
+        "TotalCharges still has NaN after load_raw_data()"
+    assert df_raw['TotalCharges'].dtype == float, \
+        "TotalCharges should be float after load_raw_data()"
+
+
+def test_new_customer_charges_per_month(splits):
+    """
+    Customers with tenure=0 should have charges_per_month=0.0,
+    not NaN or infinity. Verifies the +1 denominator protection.
+    """
+    X_train, X_val, X_test, *_ = splits
+    all_X = pd.concat([X_train, X_val, X_test])
+    new_customers = all_X[all_X['tenure'] == 0]
+
+    if len(new_customers) > 0:
+        assert new_customers['charges_per_month'].isnull().sum() == 0, \
+            "tenure=0 customers have NaN in charges_per_month"
+        assert not np.isinf(new_customers['charges_per_month']).any(), \
+            "tenure=0 customers have Inf in charges_per_month"
+        assert (new_customers['charges_per_month'] == 0.0).all(), \
+            "tenure=0 customers should have charges_per_month=0.0"
+
+
+def test_churn_binary_values(splits):
+    """
+    Target column must contain only 0 and 1 after clean_data().
+    Catches a broken Yes/No mapping on the target.
+    """
+    _, _, _, y_train, y_val, y_test = splits
+    for name, y in [('y_train', y_train), ('y_val', y_val), ('y_test', y_test)]:
+        unique = set(y.unique())
+        assert unique.issubset({0, 1}), \
+            f"{name} contains values other than 0 and 1: {unique}"
+
+
+def test_gender_binary_values(splits):
+    """
+    gender must be 0 or 1 after clean_data(), not 'Male'/'Female'.
+    """
+    X_train, *_ = splits
+    unique = set(X_train['gender'].unique())
+    assert unique.issubset({0, 1}), \
+        f"gender contains unexpected values: {unique}"
+
+
+def test_train_test_no_overlap(splits):
+    """
+    Train and test sets must share no rows.
+    Catches a bug where the split produced duplicate indices.
+    """
+    X_train, _, X_test, *_ = splits
+    train_idx = set(X_train.index)
+    test_idx  = set(X_test.index)
+    overlap   = train_idx.intersection(test_idx)
+    assert len(overlap) == 0, \
+        f"Train and test share {len(overlap)} row indices — potential leakage"
+
+
+def test_train_val_no_overlap(splits):
+    """
+    Train and val sets must share no rows.
+    """
+    X_train, X_val, *_ = splits
+    train_idx = set(X_train.index)
+    val_idx   = set(X_val.index)
+    overlap   = train_idx.intersection(val_idx)
+    assert len(overlap) == 0, \
+        f"Train and val share {len(overlap)} row indices — potential leakage"
+
+
+def test_total_row_count(splits):
+    """
+    Train + val + test must add up to the full dataset (7043 rows).
+    Catches a split that accidentally drops rows.
+    """
+    X_train, X_val, X_test, *_ = splits
+    total = X_train.shape[0] + X_val.shape[0] + X_test.shape[0]
+    assert total == 7043, \
+        f"Expected 7043 total rows, got {total} — rows were lost in splitting"
+
+
+def test_preprocessor_is_unfitted():
+    """
+    build_preprocessor() must return an unfitted transformer each time.
+    Catches accidental state sharing between calls.
+    """
+    from sklearn.exceptions import NotFittedError
+    from src.features import build_preprocessor
+    import numpy as np
+
+    pp = build_preprocessor()
+    dummy = pd.DataFrame({col: [0] for col in
+                          ['tenure', 'MonthlyCharges', 'TotalCharges',
+                           'charges_per_month', 'num_services',
+                           'MultipleLines', 'InternetService',
+                           'OnlineSecurity', 'OnlineBackup',
+                           'DeviceProtection', 'TechSupport',
+                           'StreamingTV', 'StreamingMovies',
+                           'Contract', 'PaymentMethod',
+                           'gender', 'Partner', 'Dependents',
+                           'PhoneService', 'PaperlessBilling',
+                           'SeniorCitizen']})
+    try:
+        pp.transform(dummy)
+        pytest.fail("Expected NotFittedError but transform succeeded")
+    except NotFittedError:
+        pass  # correct — transformer is unfitted
+
+
+def test_num_services_counts_only_yes(splits):
+    """
+    num_services must count 'Yes' values only, not 'No internet service'.
+    Verifies the lambda correctly filters to == 'Yes'.
+    """
+    from src.features import load_raw_data, clean_data, engineer_features
+    df = load_raw_data('data/raw/telco_churn.csv')
+    df = clean_data(df)
+    df = engineer_features(df)
+
+    service_cols = ['OnlineSecurity', 'OnlineBackup', 'DeviceProtection',
+                    'TechSupport', 'StreamingTV', 'StreamingMovies']
+
+    # Manual count for first 5 rows
+    manual = (df[service_cols].iloc[:5] == 'Yes').sum(axis=1).values
+    pipeline = df['num_services'].iloc[:5].values
+
+    np.testing.assert_array_equal(
+        manual, pipeline,
+        err_msg="num_services doesn't match manual Yes count"
+    )
+
+
+def test_feature_columns_complete(splits):
+    """
+    X_train must contain all expected feature columns and nothing extra.
+    Catches columns being accidentally added or dropped.
+    """
+    from src.features import (NUMERICAL_FEATURES, BINARY_FEATURES,
+                               MULTI_CAT_FEATURES)
+    X_train, *_ = splits
+    expected = set(NUMERICAL_FEATURES + BINARY_FEATURES + MULTI_CAT_FEATURES)
+    actual   = set(X_train.columns)
+    missing  = expected - actual
+    extra    = actual - expected
+
+    assert not missing, f"Expected columns missing from X_train: {missing}"
+    assert not extra,   f"Unexpected columns in X_train: {extra}"
+
+def test_run_pipeline_saves_to_disk(tmp_path):
+    """
+    run_pipeline() with processed_dir should save 6 CSV files to disk.
+    Uses pytest's tmp_path fixture for a clean temporary directory.
+    """
+    from src.features import run_pipeline
+
+    run_pipeline(
+        'data/raw/telco_churn.csv',
+        processed_dir=str(tmp_path)
+    )
+
+    expected_files = ['X_train.csv', 'X_val.csv', 'X_test.csv',
+                      'y_train.csv', 'y_val.csv', 'y_test.csv']
+
+    for fname in expected_files:
+        fpath = tmp_path / fname
+        assert fpath.exists(), f"{fname} was not saved to disk"
+        df = pd.read_csv(fpath)
+        assert len(df) > 0, f"{fname} is empty"
