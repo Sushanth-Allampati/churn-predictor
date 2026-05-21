@@ -1,5 +1,24 @@
 # src/features.py
+"""
+src/features.py
+───────────────
+Data preparation pipeline for the Telco Customer Churn predictor.
 
+Pipeline sequence (call in this order):
+    1. load_raw_data()      — read CSV, fix TotalCharges dtype
+    2. clean_data()         — drop ID, encode binary columns and target
+    3. engineer_features()  — create charges_per_month and num_services
+    4. split_data()         — stratified train / val / test split
+    5. build_preprocessor() — build unfitted ColumnTransformer
+    6. run_pipeline()       — convenience wrapper for steps 1–4
+
+The ColumnTransformer from build_preprocessor() is fit inside
+src/train.py on training data only — never here.
+
+Column constants (NUMERICAL_FEATURES, BINARY_FEATURES, etc.) are
+the single source of truth for column names across the entire project.
+Any other file that needs column lists imports them from here.
+"""
 import os
 import pandas as pd
 import numpy as np
@@ -54,7 +73,24 @@ BINARY_YES_NO = [
 # ── Step 1: Load ──────────────────────────────────────────────────────────────
 
 def load_raw_data(path: str) -> pd.DataFrame:
-    """Read raw CSV and fix TotalCharges dtype."""
+    """
+    Read the raw Telco CSV and fix the TotalCharges column dtype.
+
+    TotalCharges is stored as object in the raw file because 11 rows
+    contain whitespace strings instead of numbers. These 11 customers
+    have tenure=0 (brand new, not yet billed) so the correct imputation
+    is 0.0, not the column mean.
+
+    Parameters
+    ----------
+    path : str
+        Path to the raw CSV file (e.g. 'data/raw/telco_churn.csv').
+
+    Returns
+    -------
+    pd.DataFrame
+        Raw dataframe with TotalCharges as float64, 7043 rows, 21 columns.
+    """
     df = pd.read_csv(path)
 
     # TotalCharges has whitespace strings for 11 new customers (tenure=0)
@@ -69,11 +105,34 @@ def load_raw_data(path: str) -> pd.DataFrame:
 
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Drop identifiers, encode binary Yes/No columns to 1/0,
-    encode target Churn to 1/0.
+    Apply cleaning steps that are safe before the train/test split.
 
-    Does NOT scale or one-hot encode — those go inside the
-    sklearn Pipeline to prevent data leakage.
+    Specifically:
+    - Drops customerID (random identifier, zero predictive signal)
+    - Encodes gender to 1/0 (Male=1, Female=0)
+    - Encodes Yes/No binary columns to 1/0
+    - Encodes the target Churn to 1/0
+
+    Does NOT apply StandardScaler or OneHotEncoder. Those transformations
+    use statistics computed from the data (mean, std, category frequencies)
+    and must be fit only on training data to prevent leakage. They belong
+    inside the sklearn Pipeline in src/train.py.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Output of load_raw_data().
+
+    Returns
+    -------
+    pd.DataFrame
+        Cleaned dataframe, 7043 rows, 20 columns (customerID dropped,
+        Churn encoded to int).
+
+    Raises
+    ------
+    ValueError
+        If any binary encoding produces NaN — signals unexpected raw data.
     """
     df = df.copy()
 
@@ -106,9 +165,38 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Create two derived features:
-    - charges_per_month : removes multicollinearity between TotalCharges and tenure
-    - num_services      : captures add-on service count as a single column
+    Create two derived features from existing columns.
+
+    charges_per_month
+        Formula: TotalCharges / (tenure + 1)
+        Motivation: TotalCharges and tenure have 0.83 correlation in this
+        dataset — they carry nearly redundant information. This feature
+        decouples them by normalising total spend by tenure length.
+        The +1 prevents division by zero for new customers (tenure=0).
+        Confirmed stronger point-biserial correlation with Churn than
+        raw TotalCharges in EDA (see notebooks/01_eda.ipynb).
+
+    num_services
+        Formula: count of 'Yes' values across 6 add-on service columns
+        Motivation: all 6 service columns (OnlineSecurity, OnlineBackup,
+        DeviceProtection, TechSupport, StreamingTV, StreamingMovies) show
+        the same directional relationship with Churn in EDA. Collapsing
+        them into one count feature replaces 12 one-hot encoded columns
+        with 1 numerical column, reducing overfitting risk.
+
+    Both features are derived arithmetically — no statistics from the
+    data are used — so they are safe to compute before splitting.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Output of clean_data().
+
+    Returns
+    -------
+    pd.DataFrame
+        Input dataframe plus two new columns: charges_per_month (float)
+        and num_services (int, range 0–6).
     """
     df = df.copy()
 
@@ -136,8 +224,32 @@ def split_data(df: pd.DataFrame,
                test_size: float = 0.15,
                random_state: int = 42):
     """
-    Stratified train / val / test split.
+    Stratified three-way split: train / val / test.
+
     Stratification preserves the 26.5% churn rate in all three splits.
+    Without stratification, a random split could produce a val set with
+    20% or 33% churn by chance, making val metrics an unreliable guide
+    for model selection.
+
+    The split is done in two stages:
+        Stage 1: hold out test_size fraction as the test set
+        Stage 2: split the remainder into train and val, adjusting
+                 val_size to be relative to the full dataset size
+
+    The test set is never used during training or hyperparameter tuning.
+    It is touched exactly once — for the final reported metrics.
+
+    Parameters
+    ----------
+    df           : pd.DataFrame — output of engineer_features()
+    val_size     : float — fraction of total data for validation (default 0.15)
+    test_size    : float — fraction of total data for test (default 0.15)
+    random_state : int   — random seed for reproducibility (default 42)
+
+    Returns
+    -------
+    X_train, X_val, X_test : pd.DataFrame
+    y_train, y_val, y_test : pd.Series
     """
     X = df.drop(columns=[TARGET])
     y = df[TARGET]
@@ -167,13 +279,29 @@ def split_data(df: pd.DataFrame,
 
 def build_preprocessor() -> ColumnTransformer:
     """
-    Build an unfitted sklearn ColumnTransformer:
-    - StandardScaler     → numerical features
-    - OneHotEncoder      → multi-category features
-    - passthrough        → binary features (already 0/1)
+    Build and return an unfitted sklearn ColumnTransformer.
 
-    Fit ONLY on training data. Transform val and test using
-    the stored training statistics — never refit on val/test.
+    Transformations applied:
+    ┌─────────────────────┬──────────────────┬─────────────────────────┐
+    │ Transformer         │ Columns          │ Reason                  │
+    ├─────────────────────┼──────────────────┼─────────────────────────┤
+    │ StandardScaler      │ NUMERICAL (5)    │ XGBoost is scale-       │
+    │                     │                  │ invariant but LR needs  │
+    │                     │                  │ scaled features         │
+    │ OneHotEncoder       │ MULTI_CAT (10)   │ Nominal categories with │
+    │ drop='first'        │                  │ no ordinal relationship  │
+    │ handle_unknown=     │                  │ handle_unknown prevents  │
+    │ 'ignore'            │                  │ API crash on new values │
+    │ passthrough         │ BINARY (6)       │ Already 0/1 — scaling   │
+    │                     │                  │ would change nothing    │
+    └─────────────────────┴──────────────────┴─────────────────────────┘
+
+    Returns an UNFITTED transformer. Call .fit_transform(X_train) in
+    src/train.py — never fit on val or test data.
+
+    Returns
+    -------
+    sklearn.compose.ColumnTransformer (unfitted)
     """
     preprocessor = ColumnTransformer(
         transformers=[
@@ -207,12 +335,30 @@ def build_preprocessor() -> ColumnTransformer:
 
 def run_pipeline(raw_path: str, processed_dir: str = None):
     """
-    Run the full data preparation sequence:
-    load → clean → engineer → split → (optionally save splits to disk)
+    Convenience wrapper: runs the full data preparation sequence.
+
+    Calls in order: load_raw_data → clean_data → engineer_features → split_data.
+    Optionally saves all six splits (X/y for train/val/test) to disk as CSVs.
+
+    Use this function in:
+    - Notebooks for quick data loading
+    - src/train.py to get splits before training
+    - tests/ fixtures to load data once per test module
+
+    Do NOT use this to load data inside the API. The API receives single
+    rows of pre-split data at inference time — it should call
+    build_preprocessor() with a pre-fitted transformer loaded from disk.
+
+    Parameters
+    ----------
+    raw_path      : str  — path to raw CSV file
+    processed_dir : str  — if provided, saves splits here as CSV files.
+                           Creates the directory if it doesn't exist.
 
     Returns
     -------
-    X_train, X_val, X_test, y_train, y_val, y_test
+    X_train, X_val, X_test : pd.DataFrame
+    y_train, y_val, y_test : pd.Series
     """
     df = load_raw_data(raw_path)
     df = clean_data(df)
