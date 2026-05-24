@@ -53,7 +53,7 @@ from src.features import (
 )
 
 warnings.filterwarnings('ignore')
-
+from xgboost import XGBClassifier
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 RAW_PATH    = 'data/raw/telco_churn.csv'
@@ -231,35 +231,75 @@ if __name__ == '__main__':
     parser.add_argument(
         '--experiment',
         type=str,
-        default='baseline',
+        default='model-comparison',
         help='MLflow experiment name'
+    )
+    parser.add_argument(
+        '--model',
+        type=str,
+        default='lr',
+        choices=['lr', 'xgb'],
+        help='Model to train: lr (Logistic Regression) or xgb (XGBoost)'
     )
     args = parser.parse_args()
 
-    # ── Logistic Regression baseline ─────────────────────────────────────────
-    # Logistic Regression is the baseline — not because it's expected to win,
-    # but because it sets a floor that tree models must beat to be justified.
-    # C=1.0 is the default regularisation strength — no tuning at this stage.
+    # ── Logistic Regression baseline ──────────────────────────────────────────
+    if args.model == 'lr':
 
-    lr_params = {
-        'C'          : 1.0,
-        'max_iter'   : 1000,
-        'solver'     : 'lbfgs',
-        'class_weight': 'balanced',  # handles 73/27 imbalance automatically
-    }
+        lr_params = {
+    'C'           : 1.0,
+    'max_iter'    : 1000,
+    'solver'      : 'saga',      # changed from lbfgs — compatible with sklearn 1.5+
+    'class_weight': 'balanced',
+}
 
-    model = LogisticRegression(
-        C            = lr_params['C'],
-        max_iter     = lr_params['max_iter'],
-        solver       = lr_params['solver'],
-        class_weight = lr_params['class_weight'],
-        random_state = 42,
-    )
+        model = LogisticRegression(
+            C            = lr_params['C'],
+            max_iter     = lr_params['max_iter'],
+            solver       = lr_params['solver'],
+            class_weight = lr_params['class_weight'],
+            random_state = 42,
+            n_jobs       = -1,           # use all CPU cores — saga supports parallelism
+        )
 
-    pipeline, metrics = train(
-        model=model,
-        params=lr_params,
-        experiment_name=args.experiment,
-    )
+        pipeline, metrics = train(
+            model           = model,
+            params          = lr_params,
+            experiment_name = args.experiment,
+        )
+
+    # ── XGBoost ───────────────────────────────────────────────────────────────
+    elif args.model == 'xgb':
+
+        scale_pos_weight = (1 - 0.265) / 0.265   # ≈ 2.77
+
+        xgb_params = {
+            'n_estimators'    : 300,
+            'max_depth'       : 4,
+            'learning_rate'   : 0.05,
+            'subsample'       : 0.8,
+            'colsample_bytree': 0.8,
+            'scale_pos_weight': round(scale_pos_weight, 4),
+            'eval_metric'     : 'aucpr',
+            'random_state'    : 42,
+        }
+
+        model = XGBClassifier(
+            n_estimators     = xgb_params['n_estimators'],
+            max_depth        = xgb_params['max_depth'],
+            learning_rate    = xgb_params['learning_rate'],
+            subsample        = xgb_params['subsample'],
+            colsample_bytree = xgb_params['colsample_bytree'],
+            scale_pos_weight = xgb_params['scale_pos_weight'],
+            eval_metric      = xgb_params['eval_metric'],
+            random_state     = xgb_params['random_state'],
+            verbosity        = 0,
+        )
+
+        pipeline, metrics = train(
+            model           = model,
+            params          = xgb_params,
+            experiment_name = args.experiment,
+        )
 
     print("Done. Open http://localhost:5000 to view the run.")
