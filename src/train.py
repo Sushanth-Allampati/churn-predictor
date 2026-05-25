@@ -30,6 +30,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import mlflow
+from lightgbm import LGBMClassifier
 import mlflow.sklearn
 import numpy as np
 import pandas as pd
@@ -238,9 +239,8 @@ if __name__ == '__main__':
         '--model',
         type=str,
         default='lr',
-        choices=['lr', 'xgb'],
-        help='Model to train: lr (Logistic Regression) or xgb (XGBoost)'
-    )
+        choices=['lr', 'xgb', 'lgbm'],    # add lgbm here
+        help='Model to train: lr, xgb, or lgbm')
     args = parser.parse_args()
 
     # ── Logistic Regression baseline ──────────────────────────────────────────
@@ -299,6 +299,43 @@ if __name__ == '__main__':
         pipeline, metrics = train(
             model           = model,
             params          = xgb_params,
+            experiment_name = args.experiment,
+        )
+    # ── LightGBM ──────────────────────────────────────────────────────────────
+    elif args.model == 'lgbm':
+
+        lgbm_params = {
+            'n_estimators'    : 300,
+            'num_leaves'      : 31,
+            'max_depth'       : -1,       # -1 means no limit — num_leaves controls complexity
+            'learning_rate'   : 0.05,
+            'feature_fraction': 0.8,      # same as colsample_bytree in XGBoost
+            'bagging_fraction': 0.8,      # same as subsample in XGBoost
+            'bagging_freq'    : 5,        # apply bagging every 5 iterations
+            'min_child_samples': 20,      # min rows per leaf — overfitting control
+            'is_unbalance'    : True,     # handles 73/27 class imbalance automatically
+            'metric'          : 'average_precision',  # PR-AUC as internal metric
+            'random_state'    : 42,
+        }
+
+        model = LGBMClassifier(
+            n_estimators     = lgbm_params['n_estimators'],
+            num_leaves       = lgbm_params['num_leaves'],
+            max_depth        = lgbm_params['max_depth'],
+            learning_rate    = lgbm_params['learning_rate'],
+            feature_fraction = lgbm_params['feature_fraction'],
+            bagging_fraction = lgbm_params['bagging_fraction'],
+            bagging_freq     = lgbm_params['bagging_freq'],
+            min_child_samples= lgbm_params['min_child_samples'],
+            is_unbalance     = lgbm_params['is_unbalance'],
+            metric           = lgbm_params['metric'],
+            random_state     = lgbm_params['random_state'],
+            verbose          = -1,        # suppress LightGBM's own output
+        )
+
+        pipeline, metrics = train(
+            model           = model,
+            params          = lgbm_params,
             experiment_name = args.experiment,
         )
 
