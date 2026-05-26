@@ -1,0 +1,8 @@
+{
+  "optimal_threshold": 0.621,
+  "threshold_metric": "f1",
+  "val_f1_at_threshold": 0.6342,
+  "val_precision": 0.6,
+  "val_recall": 0.6726,
+  "note": "Computed on validation set. Adjust for business needs."
+}
