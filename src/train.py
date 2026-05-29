@@ -226,9 +226,68 @@ def train(model, params: dict, experiment_name: str):
 
     return pipeline, all_metrics
 
+def train_from_best_params(model_name: str):
+    """
+    Load best params saved by Optuna and train a final registered model.
+    """
+    import json
+
+    # Define here directly — avoids any module-level scope issues
+    scale_pos_weight = (1 - 0.265) / 0.265   # ≈ 2.77
+
+    params_path = f'models/best_params_{model_name}.json'
+    if not os.path.exists(params_path):
+        raise FileNotFoundError(
+            f"No tuned params found at {params_path}. "
+            f"Run src/tune.py --model {model_name} first."
+        )
+
+    with open(params_path) as f:
+        config = json.load(f)
+
+    best_params  = config['best_params']
+    display_name = config['model']
+
+    print(f"\nTraining {display_name} with Optuna best params...")
+    print(f"Expected val PR-AUC: {config['best_val_pr_auc']}")
+
+    if model_name == 'xgb':
+        model = XGBClassifier(
+            **best_params,
+            scale_pos_weight = scale_pos_weight,   # local variable
+            eval_metric      = 'aucpr',
+            random_state     = 42,
+            verbosity        = 0,
+        )
+    elif model_name == 'lgbm':
+        model = LGBMClassifier(
+            **best_params,
+            is_unbalance = True,
+            metric       = 'average_precision',
+            random_state = 42,
+            verbose      = -1,
+        )
+    else:
+        raise ValueError(f"Unknown model_name: {model_name}")
+
+    pipeline, metrics = train(
+        model           = model,
+        params          = {**best_params, 'tuned_by': 'optuna'},
+        experiment_name = 'model-comparison',
+    )
+
+    return pipeline, metrics
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser(description='Train churn model')
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    parser = argparse.ArgumentParser(description='Train churn prediction model')
     parser.add_argument(
         '--experiment',
         type=str,
@@ -239,19 +298,25 @@ if __name__ == '__main__':
         '--model',
         type=str,
         default='lr',
-        choices=['lr', 'xgb', 'lgbm'],    # add lgbm here
-        help='Model to train: lr, xgb, or lgbm')
+        choices=['lr', 'xgb', 'lgbm'],
+        help='Model to train: lr, xgb, or lgbm'
+    )
+    parser.add_argument(
+        '--tuned',
+        action='store_true',
+        help='Use Optuna best params from models/best_params_{model}.json'
+    )
     args = parser.parse_args()
 
-    # ── Logistic Regression baseline ──────────────────────────────────────────
+    # ── Logistic Regression ───────────────────────────────────────────────────
     if args.model == 'lr':
 
         lr_params = {
-    'C'           : 1.0,
-    'max_iter'    : 1000,
-    'solver'      : 'saga',      # changed from lbfgs — compatible with sklearn 1.5+
-    'class_weight': 'balanced',
-}
+            'C'           : 1.0,
+            'max_iter'    : 1000,
+            'solver'      : 'saga',
+            'class_weight': 'balanced',
+        }
 
         model = LogisticRegression(
             C            = lr_params['C'],
@@ -259,7 +324,7 @@ if __name__ == '__main__':
             solver       = lr_params['solver'],
             class_weight = lr_params['class_weight'],
             random_state = 42,
-            n_jobs       = -1,           # use all CPU cores — saga supports parallelism
+            n_jobs       = -1,
         )
 
         pipeline, metrics = train(
@@ -271,72 +336,79 @@ if __name__ == '__main__':
     # ── XGBoost ───────────────────────────────────────────────────────────────
     elif args.model == 'xgb':
 
-        scale_pos_weight = (1 - 0.265) / 0.265   # ≈ 2.77
+        if args.tuned:
+            pipeline, metrics = train_from_best_params('xgb')
 
-        xgb_params = {
-            'n_estimators'    : 300,
-            'max_depth'       : 4,
-            'learning_rate'   : 0.05,
-            'subsample'       : 0.8,
-            'colsample_bytree': 0.8,
-            'scale_pos_weight': round(scale_pos_weight, 4),
-            'eval_metric'     : 'aucpr',
-            'random_state'    : 42,
-        }
+        else:
+            xgb_params = {
+                'n_estimators'    : 300,
+                'max_depth'       : 4,
+                'learning_rate'   : 0.05,
+                'subsample'       : 0.8,
+                'colsample_bytree': 0.8,
+                'scale_pos_weight': round(SCALE_POS_WEIGHT, 4),
+                'eval_metric'     : 'aucpr',
+                'random_state'    : 42,
+            }
 
-        model = XGBClassifier(
-            n_estimators     = xgb_params['n_estimators'],
-            max_depth        = xgb_params['max_depth'],
-            learning_rate    = xgb_params['learning_rate'],
-            subsample        = xgb_params['subsample'],
-            colsample_bytree = xgb_params['colsample_bytree'],
-            scale_pos_weight = xgb_params['scale_pos_weight'],
-            eval_metric      = xgb_params['eval_metric'],
-            random_state     = xgb_params['random_state'],
-            verbosity        = 0,
-        )
+            model = XGBClassifier(
+                n_estimators     = xgb_params['n_estimators'],
+                max_depth        = xgb_params['max_depth'],
+                learning_rate    = xgb_params['learning_rate'],
+                subsample        = xgb_params['subsample'],
+                colsample_bytree = xgb_params['colsample_bytree'],
+                scale_pos_weight = xgb_params['scale_pos_weight'],
+                eval_metric      = xgb_params['eval_metric'],
+                random_state     = xgb_params['random_state'],
+                verbosity        = 0,
+            )
 
-        pipeline, metrics = train(
-            model           = model,
-            params          = xgb_params,
-            experiment_name = args.experiment,
-        )
+            pipeline, metrics = train(
+                model           = model,
+                params          = xgb_params,
+                experiment_name = args.experiment,
+            )
+
     # ── LightGBM ──────────────────────────────────────────────────────────────
     elif args.model == 'lgbm':
 
-        lgbm_params = {
-            'n_estimators'    : 300,
-            'num_leaves'      : 31,
-            'max_depth'       : -1,       # -1 means no limit — num_leaves controls complexity
-            'learning_rate'   : 0.05,
-            'feature_fraction': 0.8,      # same as colsample_bytree in XGBoost
-            'bagging_fraction': 0.8,      # same as subsample in XGBoost
-            'bagging_freq'    : 5,        # apply bagging every 5 iterations
-            'min_child_samples': 20,      # min rows per leaf — overfitting control
-            'is_unbalance'    : True,     # handles 73/27 class imbalance automatically
-            'metric'          : 'average_precision',  # PR-AUC as internal metric
-            'random_state'    : 42,
-        }
+        if args.tuned:
+            pipeline, metrics = train_from_best_params('lgbm')
 
-        model = LGBMClassifier(
-            n_estimators     = lgbm_params['n_estimators'],
-            num_leaves       = lgbm_params['num_leaves'],
-            max_depth        = lgbm_params['max_depth'],
-            learning_rate    = lgbm_params['learning_rate'],
-            feature_fraction = lgbm_params['feature_fraction'],
-            bagging_fraction = lgbm_params['bagging_fraction'],
-            bagging_freq     = lgbm_params['bagging_freq'],
-            min_child_samples= lgbm_params['min_child_samples'],
-            is_unbalance     = lgbm_params['is_unbalance'],
-            metric           = lgbm_params['metric'],
-            random_state     = lgbm_params['random_state'],
-            verbose          = -1,        # suppress LightGBM's own output
-        )
+        else:
+            lgbm_params = {
+                'n_estimators'    : 300,
+                'num_leaves'      : 31,
+                'max_depth'       : -1,
+                'learning_rate'   : 0.05,
+                'feature_fraction': 0.8,
+                'bagging_fraction': 0.8,
+                'bagging_freq'    : 5,
+                'min_child_samples': 20,
+                'is_unbalance'    : True,
+                'metric'          : 'average_precision',
+                'random_state'    : 42,
+            }
 
-        pipeline, metrics = train(
-            model           = model,
-            params          = lgbm_params,
-            experiment_name = args.experiment,
-        )
+            model = LGBMClassifier(
+                n_estimators      = lgbm_params['n_estimators'],
+                num_leaves        = lgbm_params['num_leaves'],
+                max_depth         = lgbm_params['max_depth'],
+                learning_rate     = lgbm_params['learning_rate'],
+                feature_fraction  = lgbm_params['feature_fraction'],
+                bagging_fraction  = lgbm_params['bagging_fraction'],
+                bagging_freq      = lgbm_params['bagging_freq'],
+                min_child_samples = lgbm_params['min_child_samples'],
+                is_unbalance      = lgbm_params['is_unbalance'],
+                metric            = lgbm_params['metric'],
+                random_state      = lgbm_params['random_state'],
+                verbose           = -1,
+            )
 
-    print("Done. Open http://localhost:5000 to view the run.")
+            pipeline, metrics = train(
+                model           = model,
+                params          = lgbm_params,
+                experiment_name = args.experiment,
+            )
+
+    print("\nDone. Open http://localhost:5000 to view the run.")
