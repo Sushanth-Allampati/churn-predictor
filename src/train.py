@@ -9,31 +9,37 @@ MLflow Model Registry.
 
 Usage
 -----
-    python src/train.py                          # train with default config
-    python src/train.py --experiment baseline    # named experiment
-    python src/train.py --experiment xgboost     # swap the model
+    python src/train.py                              # LR baseline
+    python src/train.py --model xgb                 # XGBoost default params
+    python src/train.py --model lgbm                # LightGBM default params
+    python src/train.py --model xgb  --tuned        # XGBoost Optuna best params
+    python src/train.py --model lgbm --tuned        # LightGBM Optuna best params
+    python src/train.py --model lgbm --experiment my-exp
 
-Logged to MLflow for every run
--------------------------------
-    Params  : model name, all hyperparameters, random_state
-    Metrics : accuracy, ROC-AUC, PR-AUC, F1, precision, recall
-    Artifacts: trained pipeline (.pkl), confusion matrix plot,
-               ROC curve plot, classification report (.txt)
+What is logged to MLflow for every run
+---------------------------------------
+    Params    : model name, all hyperparameters, random_state
+    Metrics   : accuracy, ROC-AUC, PR-AUC, F1, precision, recall
+                (both train_ and val_ prefixed)
+    Artifacts : confusion_matrix.png, roc_curve.png,
+                classification_report.txt, pipeline/
 """
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
-import pickle
+import json
 import warnings
+
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg')   # non-interactive backend — must be before pyplot import
+
 import matplotlib.pyplot as plt
 import mlflow
-from lightgbm import LGBMClassifier
 import mlflow.sklearn
 import numpy as np
 import pandas as pd
+from lightgbm import LGBMClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
@@ -47,56 +53,66 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
+from xgboost import XGBClassifier
 
-from src.features import (
-    build_preprocessor,
-    run_pipeline,
-)
+from src.features import build_preprocessor, run_pipeline
 
 warnings.filterwarnings('ignore')
-from xgboost import XGBClassifier
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-RAW_PATH    = 'data/raw/telco_churn.csv'
-MLFLOW_URI  = 'sqlite:///mlflow.db'          # local directory — mlflow ui reads from here
-MODEL_NAME  = 'churn-model'     # name in the MLflow Model Registry
+RAW_PATH         = 'data/raw/telco_churn.csv'
+MLFLOW_URI       = 'sqlite:///mlflow.db'
+MODEL_NAME       = 'churn-model'
+
+# Negative-to-positive class ratio for XGBoost scale_pos_weight.
+# Computed from training set churn rate of 26.5%:
+#   (1 - 0.265) / 0.265 ≈ 2.77
+SCALE_POS_WEIGHT = (1 - 0.265) / 0.265
+
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
 
 def evaluate_model(pipeline, X, y, split_name: str) -> dict:
     """
-    Compute and return all evaluation metrics for one split.
+    Compute all evaluation metrics for one data split.
 
     Parameters
     ----------
     pipeline   : fitted sklearn Pipeline
-    X          : feature dataframe
-    y          : true labels (0/1)
-    split_name : 'train', 'val', or 'test' — used for metric key prefixes
+    X          : feature dataframe (un-transformed — pipeline handles transform)
+    y          : true binary labels (0/1 Series or array)
+    split_name : prefix for metric keys — 'train', 'val', or 'test'
 
     Returns
     -------
-    dict of metric_name → float
+    dict mapping '{split_name}_{metric}' → float
     """
     y_pred      = pipeline.predict(X)
     y_pred_prob = pipeline.predict_proba(X)[:, 1]
 
-    metrics = {
-        f'{split_name}_accuracy'  : accuracy_score(y, y_pred),
-        f'{split_name}_roc_auc'   : roc_auc_score(y, y_pred_prob),
-        f'{split_name}_pr_auc'    : average_precision_score(y, y_pred_prob),
-        f'{split_name}_f1'        : f1_score(y, y_pred, zero_division=0),
-        f'{split_name}_precision' : precision_score(y, y_pred, zero_division=0),
-        f'{split_name}_recall'    : recall_score(y, y_pred, zero_division=0),
+    return {
+        f'{split_name}_accuracy' : accuracy_score(y, y_pred),
+        f'{split_name}_roc_auc'  : roc_auc_score(y, y_pred_prob),
+        f'{split_name}_pr_auc'   : average_precision_score(y, y_pred_prob),
+        f'{split_name}_f1'       : f1_score(y, y_pred, zero_division=0),
+        f'{split_name}_precision': precision_score(y, y_pred, zero_division=0),
+        f'{split_name}_recall'   : recall_score(y, y_pred, zero_division=0),
     }
 
-    return metrics
 
-def save_confusion_matrix(pipeline, X_val, y_val, run_dir: str):
-    """Save confusion matrix plot as a PNG artifact."""
+# ── Artifact helpers ──────────────────────────────────────────────────────────
+
+def save_confusion_matrix(pipeline, X_val, y_val, run_dir: str) -> str:
+    """
+    Save a confusion matrix PNG to run_dir and return the file path.
+    Calls plt.close() to prevent memory leaks in long tuning runs.
+    """
     fig, ax = plt.subplots(figsize=(5, 4))
     ConfusionMatrixDisplay.from_estimator(
         pipeline, X_val, y_val,
         display_labels=['No Churn', 'Churned'],
-        cmap='Blues', ax=ax
+        cmap='Blues', ax=ax,
     )
     ax.set_title('Confusion Matrix — Validation Set')
     path = os.path.join(run_dir, 'confusion_matrix.png')
@@ -106,12 +122,15 @@ def save_confusion_matrix(pipeline, X_val, y_val, run_dir: str):
     return path
 
 
-def save_roc_curve(pipeline, X_val, y_val, run_dir: str):
-    """Save ROC curve plot as a PNG artifact."""
+def save_roc_curve(pipeline, X_val, y_val, run_dir: str) -> str:
+    """
+    Save a ROC curve PNG to run_dir and return the file path.
+    Overlays a random-classifier diagonal for reference.
+    """
     fig, ax = plt.subplots(figsize=(5, 4))
     RocCurveDisplay.from_estimator(
         pipeline, X_val, y_val, ax=ax,
-        name=pipeline.named_steps['model'].__class__.__name__
+        name=pipeline.named_steps['model'].__class__.__name__,
     )
     ax.plot([0, 1], [0, 1], 'k--', label='Random (AUC=0.5)')
     ax.set_title('ROC Curve — Validation Set')
@@ -123,138 +142,175 @@ def save_roc_curve(pipeline, X_val, y_val, run_dir: str):
     return path
 
 
-def save_classification_report(pipeline, X_val, y_val, run_dir: str):
-    """Save full classification report as a text artifact."""
-    y_pred = pipeline.predict(X_val)
-    report = classification_report(
+def save_classification_report(pipeline, X_val, y_val, run_dir: str) -> str:
+    """
+    Save sklearn's full classification report as a .txt artifact.
+    Includes per-class precision, recall, F1, and support.
+    """
+    y_pred  = pipeline.predict(X_val)
+    report  = classification_report(
         y_val, y_pred,
-        target_names=['No Churn', 'Churned']
+        target_names=['No Churn', 'Churned'],
     )
     path = os.path.join(run_dir, 'classification_report.txt')
     with open(path, 'w') as f:
         f.write(report)
     return path
 
+
+# ── Core training function ────────────────────────────────────────────────────
+
 def train(model, params: dict, experiment_name: str):
     """
-    Train a model inside a sklearn Pipeline, log everything to MLflow,
-    and register the model in the MLflow Model Registry.
+    Train a model inside a sklearn Pipeline, evaluate on train and val,
+    log everything to MLflow, and register the pipeline in the Model Registry.
+
+    The sklearn Pipeline ensures the preprocessor is always fit on training
+    data only — calling pipeline.fit(X_train) fits both the ColumnTransformer
+    and the classifier in one step with no leakage risk.
 
     Parameters
     ----------
     model           : unfitted sklearn-compatible classifier
-    params          : hyperparameter dict — logged to MLflow
-    experiment_name : MLflow experiment name (groups related runs)
+    params          : hyperparameter dict logged to MLflow as params
+    experiment_name : MLflow experiment to group this run under
+
+    Returns
+    -------
+    pipeline : fitted sklearn Pipeline
+    metrics  : dict of all logged metric values
     """
-    # ── 1. Load data ──────────────────────────────────────────────────────────
+    # ── Load data ─────────────────────────────────────────────────────────────
     print(f"\nLoading data from {RAW_PATH}...")
     X_train, X_val, X_test, y_train, y_val, y_test = run_pipeline(RAW_PATH)
     print("Data loaded.")
 
-    # ── 2. Build pipeline ─────────────────────────────────────────────────────
-    # The preprocessor is always fitted on X_train inside pipeline.fit()
-    # It is never fitted separately — sklearn Pipeline handles this correctly
+    # ── Build pipeline ────────────────────────────────────────────────────────
     pipeline = Pipeline(steps=[
         ('preprocessor', build_preprocessor()),
         ('model',        model),
     ])
 
-    # ── 3. Configure MLflow ───────────────────────────────────────────────────
+    # ── Configure MLflow ──────────────────────────────────────────────────────
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment(experiment_name)
 
-    # ── 4. Start MLflow run ───────────────────────────────────────────────────
     with mlflow.start_run() as run:
         run_id = run.info.run_id
-        print(f"\nMLflow run started: {run_id}")
+        print(f"\nMLflow run started: {run_id[:8]}")
 
-        # ── 5. Train ──────────────────────────────────────────────────────────
+        # ── Train ─────────────────────────────────────────────────────────────
         print("Training...")
         pipeline.fit(X_train, y_train)
         print("Training complete.")
 
-        # ── 6. Evaluate on train and val ──────────────────────────────────────
+        # ── Evaluate ──────────────────────────────────────────────────────────
         train_metrics = evaluate_model(pipeline, X_train, y_train, 'train')
         val_metrics   = evaluate_model(pipeline, X_val,   y_val,   'val')
         all_metrics   = {**train_metrics, **val_metrics}
 
-        # ── 7. Log params ─────────────────────────────────────────────────────
+        # ── Log params ────────────────────────────────────────────────────────
         mlflow.log_param('model_name',   model.__class__.__name__)
         mlflow.log_param('random_state', 42)
         for k, v in params.items():
             mlflow.log_param(k, v)
 
-        # ── 8. Log metrics ────────────────────────────────────────────────────
+        # ── Log metrics ───────────────────────────────────────────────────────
         for k, v in all_metrics.items():
             mlflow.log_metric(k, v)
 
-        # ── 9. Print results to terminal ──────────────────────────────────────
-        print(f"\n{'─'*45}")
-        print(f"{'Metric':<25} {'Train':>8} {'Val':>8}")
-        print(f"{'─'*45}")
-        metrics_to_show = ['accuracy', 'roc_auc', 'pr_auc', 'f1',
-                           'precision', 'recall']
-        for m in metrics_to_show:
-            tr = all_metrics[f'train_{m}']
-            vl = all_metrics[f'val_{m}']
-            print(f"  {m:<23} {tr:>8.4f} {vl:>8.4f}")
-        print(f"{'─'*45}\n")
+        # ── Print results table ───────────────────────────────────────────────
+        _print_results_table(all_metrics)
 
-        # ── 10. Save and log artifacts ────────────────────────────────────────
-        os.makedirs('reports/mlflow_artifacts', exist_ok=True)
-        run_dir = f'reports/mlflow_artifacts/{run_id[:8]}'
+        # ── Save and log artifacts ────────────────────────────────────────────
+        run_dir = os.path.join('reports', 'mlflow_artifacts', run_id[:8])
         os.makedirs(run_dir, exist_ok=True)
 
-        cm_path   = save_confusion_matrix(pipeline, X_val, y_val, run_dir)
-        roc_path  = save_roc_curve(pipeline, X_val, y_val, run_dir)
-        rep_path  = save_classification_report(pipeline, X_val, y_val, run_dir)
+        cm_path  = save_confusion_matrix(pipeline, X_val, y_val, run_dir)
+        roc_path = save_roc_curve(pipeline, X_val, y_val, run_dir)
+        rep_path = save_classification_report(pipeline, X_val, y_val, run_dir)
 
         mlflow.log_artifact(cm_path)
         mlflow.log_artifact(roc_path)
         mlflow.log_artifact(rep_path)
 
-        # ── 11. Log the model ─────────────────────────────────────────────────
+        # ── Register model ────────────────────────────────────────────────────
         mlflow.sklearn.log_model(
             pipeline,
-            artifact_path='pipeline',
+            name='pipeline',
             registered_model_name=MODEL_NAME,
         )
 
-        print(f"Artifacts saved to {run_dir}/")
-        print(f"Model registered as '{MODEL_NAME}' in MLflow Model Registry.")
-        print(f"\nView run at: http://localhost:5000/#/experiments/")
+        print(f"\nArtifacts saved to {run_dir}/")
+        print(f"Model registered as '{MODEL_NAME}'.")
+        print(f"View run: http://localhost:5000")
 
     return pipeline, all_metrics
 
+
+def _print_results_table(metrics: dict):
+    """Print a clean train/val comparison table to the terminal."""
+    metric_keys = ['accuracy', 'roc_auc', 'pr_auc', 'f1', 'precision', 'recall']
+    print(f"\n{'─'*45}")
+    print(f"{'Metric':<25} {'Train':>8} {'Val':>8}")
+    print(f"{'─'*45}")
+    for m in metric_keys:
+        tr = metrics.get(f'train_{m}', 0)
+        vl = metrics.get(f'val_{m}',   0)
+        print(f"  {m:<23} {tr:>8.4f} {vl:>8.4f}")
+    print(f"{'─'*45}\n")
+
+
+# ── Load Optuna best params ───────────────────────────────────────────────────
+
+def load_best_params(model_name: str) -> dict:
+    """
+    Load Optuna best params from models/best_params_{model_name}.json.
+
+    Parameters
+    ----------
+    model_name : 'xgb' or 'lgbm'
+
+    Returns
+    -------
+    dict with keys 'model', 'best_params', 'best_val_pr_auc', 'n_trials'
+
+    Raises
+    ------
+    FileNotFoundError if tune.py hasn't been run for this model yet.
+    """
+    path = f'models/best_params_{model_name}.json'
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"No tuned params at {path}. "
+            f"Run: python src/tune.py --model {model_name}"
+        )
+    with open(path) as f:
+        return json.load(f)
+
+
+# ── Train from Optuna best params ─────────────────────────────────────────────
+
 def train_from_best_params(model_name: str):
     """
-    Load best params saved by Optuna and train a final registered model.
+    Load the best hyperparameters saved by Optuna and train a final model.
+    Logs to the model-comparison experiment for direct comparison.
+
+    Parameters
+    ----------
+    model_name : 'xgb' or 'lgbm'
     """
-    import json
+    config      = load_best_params(model_name)
+    best_params = config['best_params']
+    display     = config['model']
 
-    # Define here directly — avoids any module-level scope issues
-    scale_pos_weight = (1 - 0.265) / 0.265   # ≈ 2.77
-
-    params_path = f'models/best_params_{model_name}.json'
-    if not os.path.exists(params_path):
-        raise FileNotFoundError(
-            f"No tuned params found at {params_path}. "
-            f"Run src/tune.py --model {model_name} first."
-        )
-
-    with open(params_path) as f:
-        config = json.load(f)
-
-    best_params  = config['best_params']
-    display_name = config['model']
-
-    print(f"\nTraining {display_name} with Optuna best params...")
-    print(f"Expected val PR-AUC: {config['best_val_pr_auc']}")
+    print(f"\nTraining {display} with Optuna best params...")
+    print(f"Expected val PR-AUC : {config['best_val_pr_auc']}")
 
     if model_name == 'xgb':
         model = XGBClassifier(
             **best_params,
-            scale_pos_weight = scale_pos_weight,   # local variable
+            scale_pos_weight = SCALE_POS_WEIGHT,
             eval_metric      = 'aucpr',
             random_state     = 42,
             verbosity        = 0,
@@ -268,147 +324,122 @@ def train_from_best_params(model_name: str):
             verbose      = -1,
         )
     else:
-        raise ValueError(f"Unknown model_name: {model_name}")
+        raise ValueError(f"Unknown model_name '{model_name}'. Choose 'xgb' or 'lgbm'.")
 
-    pipeline, metrics = train(
+    return train(
         model           = model,
         params          = {**best_params, 'tuned_by': 'optuna'},
         experiment_name = 'model-comparison',
     )
 
-    return pipeline, metrics
+
+# ── Default model configs ─────────────────────────────────────────────────────
+
+def _build_lr():
+    """Logistic Regression baseline — saga solver for sklearn 1.5+ compatibility."""
+    params = {
+        'C'           : 1.0,
+        'max_iter'    : 1000,
+        'solver'      : 'saga',
+        'class_weight': 'balanced',
+    }
+    model = LogisticRegression(
+        **params,
+        random_state = 42,
+        n_jobs       = -1,
+    )
+    return model, params
+
+
+def _build_xgb():
+    """XGBoost with sensible defaults and class imbalance correction."""
+    params = {
+        'n_estimators'    : 300,
+        'max_depth'       : 4,
+        'learning_rate'   : 0.05,
+        'subsample'       : 0.8,
+        'colsample_bytree': 0.8,
+        'scale_pos_weight': round(SCALE_POS_WEIGHT, 4),
+        'eval_metric'     : 'aucpr',
+        'random_state'    : 42,
+    }
+    model = XGBClassifier(**params, verbosity=0)
+    return model, params
+
+
+def _build_lgbm():
+    """LightGBM with sensible defaults and is_unbalance for class imbalance."""
+    params = {
+        'n_estimators'    : 300,
+        'num_leaves'      : 31,
+        'max_depth'       : -1,
+        'learning_rate'   : 0.05,
+        'feature_fraction': 0.8,
+        'bagging_fraction': 0.8,
+        'bagging_freq'    : 5,
+        'min_child_samples': 20,
+        'is_unbalance'    : True,
+        'metric'          : 'average_precision',
+        'random_state'    : 42,
+    }
+    model = LGBMClassifier(**params, verbose=-1)
+    return model, params
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
 
-    import sys
-    import os
+    # Ensure repo root is on the Python path when run as a script
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    parser = argparse.ArgumentParser(description='Train churn prediction model')
-    parser.add_argument(
-        '--experiment',
-        type=str,
-        default='model-comparison',
-        help='MLflow experiment name'
+    parser = argparse.ArgumentParser(
+        description='Train a churn prediction model and log to MLflow.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python src/train.py                              # Logistic Regression baseline
+  python src/train.py --model xgb                 # XGBoost default params
+  python src/train.py --model lgbm --tuned        # LightGBM Optuna best params
+  python src/train.py --model xgb --experiment my-experiment
+        """,
     )
     parser.add_argument(
         '--model',
         type=str,
         default='lr',
         choices=['lr', 'xgb', 'lgbm'],
-        help='Model to train: lr, xgb, or lgbm'
+        help='Model to train (default: lr)',
+    )
+    parser.add_argument(
+        '--experiment',
+        type=str,
+        default='model-comparison',
+        help='MLflow experiment name (default: model-comparison)',
     )
     parser.add_argument(
         '--tuned',
         action='store_true',
-        help='Use Optuna best params from models/best_params_{model}.json'
+        help='Use Optuna best params from models/best_params_{model}.json',
     )
     args = parser.parse_args()
 
-    # ── Logistic Regression ───────────────────────────────────────────────────
-    if args.model == 'lr':
+    # ── Dispatch to correct model ─────────────────────────────────────────────
+    if args.tuned:
+        if args.model == 'lr':
+            parser.error("--tuned is not supported for Logistic Regression.")
+        pipeline, metrics = train_from_best_params(args.model)
 
-        lr_params = {
-            'C'           : 1.0,
-            'max_iter'    : 1000,
-            'solver'      : 'saga',
-            'class_weight': 'balanced',
-        }
+    elif args.model == 'lr':
+        model, params = _build_lr()
+        pipeline, metrics = train(model, params, args.experiment)
 
-        model = LogisticRegression(
-            C            = lr_params['C'],
-            max_iter     = lr_params['max_iter'],
-            solver       = lr_params['solver'],
-            class_weight = lr_params['class_weight'],
-            random_state = 42,
-            n_jobs       = -1,
-        )
-
-        pipeline, metrics = train(
-            model           = model,
-            params          = lr_params,
-            experiment_name = args.experiment,
-        )
-
-    # ── XGBoost ───────────────────────────────────────────────────────────────
     elif args.model == 'xgb':
+        model, params = _build_xgb()
+        pipeline, metrics = train(model, params, args.experiment)
 
-        if args.tuned:
-            pipeline, metrics = train_from_best_params('xgb')
-
-        else:
-            xgb_params = {
-                'n_estimators'    : 300,
-                'max_depth'       : 4,
-                'learning_rate'   : 0.05,
-                'subsample'       : 0.8,
-                'colsample_bytree': 0.8,
-                'scale_pos_weight': round(SCALE_POS_WEIGHT, 4),
-                'eval_metric'     : 'aucpr',
-                'random_state'    : 42,
-            }
-
-            model = XGBClassifier(
-                n_estimators     = xgb_params['n_estimators'],
-                max_depth        = xgb_params['max_depth'],
-                learning_rate    = xgb_params['learning_rate'],
-                subsample        = xgb_params['subsample'],
-                colsample_bytree = xgb_params['colsample_bytree'],
-                scale_pos_weight = xgb_params['scale_pos_weight'],
-                eval_metric      = xgb_params['eval_metric'],
-                random_state     = xgb_params['random_state'],
-                verbosity        = 0,
-            )
-
-            pipeline, metrics = train(
-                model           = model,
-                params          = xgb_params,
-                experiment_name = args.experiment,
-            )
-
-    # ── LightGBM ──────────────────────────────────────────────────────────────
     elif args.model == 'lgbm':
-
-        if args.tuned:
-            pipeline, metrics = train_from_best_params('lgbm')
-
-        else:
-            lgbm_params = {
-                'n_estimators'    : 300,
-                'num_leaves'      : 31,
-                'max_depth'       : -1,
-                'learning_rate'   : 0.05,
-                'feature_fraction': 0.8,
-                'bagging_fraction': 0.8,
-                'bagging_freq'    : 5,
-                'min_child_samples': 20,
-                'is_unbalance'    : True,
-                'metric'          : 'average_precision',
-                'random_state'    : 42,
-            }
-
-            model = LGBMClassifier(
-                n_estimators      = lgbm_params['n_estimators'],
-                num_leaves        = lgbm_params['num_leaves'],
-                max_depth         = lgbm_params['max_depth'],
-                learning_rate     = lgbm_params['learning_rate'],
-                feature_fraction  = lgbm_params['feature_fraction'],
-                bagging_fraction  = lgbm_params['bagging_fraction'],
-                bagging_freq      = lgbm_params['bagging_freq'],
-                min_child_samples = lgbm_params['min_child_samples'],
-                is_unbalance      = lgbm_params['is_unbalance'],
-                metric            = lgbm_params['metric'],
-                random_state      = lgbm_params['random_state'],
-                verbose           = -1,
-            )
-
-            pipeline, metrics = train(
-                model           = model,
-                params          = lgbm_params,
-                experiment_name = args.experiment,
-            )
+        model, params = _build_lgbm()
+        pipeline, metrics = train(model, params, args.experiment)
 
     print("\nDone. Open http://localhost:5000 to view the run.")
