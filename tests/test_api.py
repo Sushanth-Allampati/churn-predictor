@@ -168,3 +168,170 @@ def test_invalid_contract_returns_422(client):
     invalid = {**VALID_CUSTOMER, 'Contract': 'Week-to-week'}
     response = client.post('/predict', json=invalid)
     assert response.status_code in (404, 422)
+
+# ── Predict endpoint tests ────────────────────────────────────────────────────
+
+def test_predict_returns_200(client):
+    response = client.post('/predict', json=VALID_CUSTOMER)
+    assert response.status_code == 200
+
+
+def test_predict_response_structure(client):
+    response = client.post('/predict', json=VALID_CUSTOMER)
+    data = response.json()
+    assert 'churn_probability' in data
+    assert 'prediction'        in data
+    assert 'risk_tier'         in data
+    assert 'threshold_used'    in data
+
+
+def test_predict_probability_in_range(client):
+    response = client.post('/predict', json=VALID_CUSTOMER)
+    prob = response.json()['churn_probability']
+    assert 0.0 <= prob <= 1.0, f"Probability {prob} outside [0, 1]"
+
+
+def test_predict_binary_prediction(client):
+    """Prediction must be exactly 0 or 1."""
+    response = client.post('/predict', json=VALID_CUSTOMER)
+    pred = response.json()['prediction']
+    assert pred in (0, 1), f"Prediction {pred} is not 0 or 1"
+
+
+def test_predict_risk_tier_valid(client):
+    """Risk tier must be High, Medium, or Low."""
+    response = client.post('/predict', json=VALID_CUSTOMER)
+    tier = response.json()['risk_tier']
+    assert tier in ('High', 'Medium', 'Low'), \
+        f"Risk tier '{tier}' is not valid"
+
+
+def test_predict_high_risk_customer(client):
+    """High-risk customer (short tenure, fiber, M2M) should score high."""
+    response = client.post('/predict', json=VALID_CUSTOMER)
+    data = response.json()
+    # High-risk profile — probability should be meaningfully above 0.5
+    assert data['churn_probability'] > 0.4, \
+        f"Expected high probability for high-risk customer, got {data['churn_probability']}"
+
+
+def test_predict_low_risk_customer(client):
+    """Low-risk customer (long tenure, two-year contract) should score low."""
+    response = client.post('/predict', json=LOYAL_CUSTOMER)
+    data = response.json()
+    assert data['churn_probability'] < 0.5, \
+        f"Expected low probability for loyal customer, got {data['churn_probability']}"
+    assert data['prediction'] == 0
+    assert data['risk_tier'] == 'Low'
+
+
+def test_predict_threshold_consistency(client):
+    """
+    Prediction must be consistent with probability and threshold.
+    If prob >= threshold → prediction=1, else prediction=0.
+    """
+    response = client.post('/predict', json=VALID_CUSTOMER)
+    data     = response.json()
+    prob      = data['churn_probability']
+    pred      = data['prediction']
+    threshold = data['threshold_used']
+
+    expected_pred = 1 if prob >= threshold else 0
+    assert pred == expected_pred, \
+        f"Prediction {pred} inconsistent with prob={prob} and threshold={threshold}"
+
+
+def test_predict_invalid_gender_422(client):
+    invalid = {**VALID_CUSTOMER, 'gender': 'Unknown'}
+    response = client.post('/predict', json=invalid)
+    assert response.status_code == 422
+
+
+def test_predict_negative_tenure_422(client):
+    invalid = {**VALID_CUSTOMER, 'tenure': -5}
+    response = client.post('/predict', json=invalid)
+    assert response.status_code == 422
+
+
+def test_predict_invalid_contract_422(client):
+    invalid = {**VALID_CUSTOMER, 'Contract': 'Daily'}
+    response = client.post('/predict', json=invalid)
+    assert response.status_code == 422
+
+
+def test_predict_zero_monthly_charges_422(client):
+    """MonthlyCharges must be > 0."""
+    invalid = {**VALID_CUSTOMER, 'MonthlyCharges': 0.0}
+    response = client.post('/predict', json=invalid)
+    assert response.status_code == 422
+
+
+def test_predict_missing_field_422(client):
+    """Missing required field should return 422."""
+    incomplete = {k: v for k, v in VALID_CUSTOMER.items() if k != 'tenure'}
+    response = client.post('/predict', json=incomplete)
+    assert response.status_code == 422
+
+
+# ── Batch predict endpoint tests ──────────────────────────────────────────────
+
+def test_batch_predict_returns_200(client):
+    payload = {'customers': [VALID_CUSTOMER, LOYAL_CUSTOMER]}
+    response = client.post('/predict/batch', json=payload)
+    assert response.status_code == 200
+
+
+def test_batch_predict_response_structure(client):
+    payload = {'customers': [VALID_CUSTOMER, LOYAL_CUSTOMER]}
+    response = client.post('/predict/batch', json=payload)
+    data = response.json()
+    assert 'predictions'  in data
+    assert 'total'        in data
+    assert 'high_risk'    in data
+    assert 'medium_risk'  in data
+    assert 'low_risk'     in data
+
+
+def test_batch_predict_total_count(client):
+    """Total count must equal number of customers sent."""
+    payload = {'customers': [VALID_CUSTOMER, LOYAL_CUSTOMER]}
+    response = client.post('/predict/batch', json=payload)
+    data = response.json()
+    assert data['total'] == 2
+    assert len(data['predictions']) == 2
+
+
+def test_batch_predict_risk_tier_sum(client):
+    """high_risk + medium_risk + low_risk must equal total."""
+    payload = {'customers': [VALID_CUSTOMER, LOYAL_CUSTOMER]}
+    response = client.post('/predict/batch', json=payload)
+    data = response.json()
+    assert data['high_risk'] + data['medium_risk'] + data['low_risk'] == data['total']
+
+
+def test_batch_predict_single_customer(client):
+    """Batch with one customer should work the same as single predict."""
+    single_resp = client.post('/predict', json=VALID_CUSTOMER)
+    batch_resp  = client.post('/predict/batch',
+                              json={'customers': [VALID_CUSTOMER]})
+
+    single_prob = single_resp.json()['churn_probability']
+    batch_prob  = batch_resp.json()['predictions'][0]['churn_probability']
+
+    assert single_prob == batch_prob, \
+        "Single and batch predictions differ for the same customer"
+
+
+def test_batch_predict_empty_list_422(client):
+    """Empty customer list should return 422."""
+    payload = {'customers': []}
+    response = client.post('/predict/batch', json=payload)
+    assert response.status_code == 422
+
+
+def test_batch_predict_invalid_customer_422(client):
+    """Batch with one invalid customer should return 422."""
+    invalid_customer = {**VALID_CUSTOMER, 'Contract': 'InvalidContract'}
+    payload = {'customers': [VALID_CUSTOMER, invalid_customer]}
+    response = client.post('/predict/batch', json=payload)
+    assert response.status_code == 422

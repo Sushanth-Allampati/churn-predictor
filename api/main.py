@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import api.model as model_module
 from api.routers import health
+from api.routers import predict
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -80,3 +81,6 @@ def root():
     """Redirect root to docs."""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url='/docs')
+
+app.include_router(health.router)
+app.include_router(predict.router)
