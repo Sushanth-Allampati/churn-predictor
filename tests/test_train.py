@@ -155,23 +155,34 @@ def test_load_best_params_raises_for_missing_file():
 
 def test_load_best_params_structure(tmp_path):
     """load_best_params must return dict with expected keys."""
-    # Create a fake params file
+    import json as json_module
+
     fake_params = {
         'model'          : 'LGBMClassifier',
         'best_params'    : {'n_estimators': 200, 'learning_rate': 0.05},
         'best_val_pr_auc': 0.72,
         'n_trials'       : 30,
     }
+
+    # Write a real temp file and point load_best_params at it
+    # by temporarily monkeypatching the path constant in src.train
     params_file = tmp_path / 'best_params_lgbm.json'
-    params_file.write_text(json.dumps(fake_params))
+    params_file.write_text(json_module.dumps(fake_params))
 
-    # Temporarily point load_best_params to the tmp file
     import src.train as train_module
-    original_path = None
 
-    with patch('os.path.exists', return_value=True):
-        with patch('builtins.open',
-                   lambda path, *a, **kw: open(str(params_file), *a, **kw)):
+    # Patch the path that load_best_params constructs internally
+    original_exists = os.path.exists
+
+    def fake_exists(path):
+        if 'best_params_lgbm' in str(path):
+            return True
+        return original_exists(path)
+
+    with patch('os.path.exists', side_effect=fake_exists):
+        with patch('src.train.open',
+                   create=True,
+                   side_effect=lambda path, *a, **kw: open(str(params_file), *a, **kw)):
             result = load_best_params('lgbm')
 
     assert 'best_params' in result
