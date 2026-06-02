@@ -2,44 +2,43 @@
 api/main.py
 ───────────
 FastAPI application entry point for the Telco Churn Prediction API.
-
-The app uses FastAPI's lifespan context manager to load the model
-once at startup and clean up on shutdown. All prediction endpoints
-use the pre-loaded model — no per-request loading.
-
-Running locally
----------------
-    uvicorn api.main:app --reload --port 8000
-
-Then visit:
-    http://localhost:8000/docs    ← interactive Swagger UI
-    http://localhost:8000/redoc  ← ReDoc documentation
 """
 
+import time
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 import api.model as model_module
-from api.routers import health
-from api.routers import predict
+from api.routers import health, predict
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level  = logging.INFO,
+    format = '%(asctime)s | %(levelname)s | %(message)s',
+    datefmt= '%H:%M:%S',
+)
+logger = logging.getLogger(__name__)
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Starting Churn Prediction API...")
+    logger.info("Starting Churn Prediction API...")
     try:
         model_module.load_model()
-        print("Startup complete.")
+        logger.info("Startup complete. API is ready.")
     except Exception as e:
         import traceback
-        print(f"STARTUP ERROR: {e}")
+        logger.error(f"STARTUP ERROR: {e}")
         traceback.print_exc()
     yield
-    print("Shutting down.")
+    logger.info("Shutting down Churn Prediction API.")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -58,29 +57,62 @@ app = FastAPI(
 )
 
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
+# ── Middleware ────────────────────────────────────────────────────────────────
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins  = ['*'],   # tighten this in production
+    allow_origins  = ['*'],
     allow_methods  = ['*'],
     allow_headers  = ['*'],
 )
 
 
+@app.middleware('http')
+async def log_requests(request: Request, call_next):
+    """
+    Log every request with method, path, status code, and duration.
+    This middleware runs for every request including health checks.
+    """
+    start   = time.time()
+    response = await call_next(request)
+    duration = (time.time() - start) * 1000   # ms
+
+    logger.info(
+        f"{request.method} {request.url.path} "
+        f"→ {response.status_code} "
+        f"({duration:.1f}ms)"
+    )
+    return response
+
+
+# ── Global exception handler ──────────────────────────────────────────────────
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Catch any unhandled exception and return a clean JSON error response.
+    Without this, unhandled exceptions return an HTML 500 page.
+    """
+    logger.error(f"Unhandled exception on {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            'error'  : 'Internal server error',
+            'detail' : str(exc),
+            'path'   : str(request.url.path),
+        }
+    )
+
+
 # ── Routers ───────────────────────────────────────────────────────────────────
 
 app.include_router(health.router)
-# predict router added on Day 22
+app.include_router(predict.router)
 
 
 # ── Root redirect ─────────────────────────────────────────────────────────────
 
 @app.get('/', include_in_schema=False)
 def root():
-    """Redirect root to docs."""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url='/docs')
-
-app.include_router(health.router)
-app.include_router(predict.router)

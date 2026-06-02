@@ -14,6 +14,15 @@ Both endpoints:
 - Return structured PredictionResponse with probability and risk tier
 """
 
+import numpy as np
+from api.schemas import (
+    BatchPredictionRequest,
+    BatchPredictionResponse,
+    CustomerFeatures,
+    ExplanationResponse,
+    FeatureContribution,
+    PredictionResponse,
+)
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 
@@ -120,18 +129,65 @@ def assign_risk_tier(probability: float, threshold: float) -> str:
     else:
         return 'Low'
 
+def generate_reason(df: pd.DataFrame, probability: float,
+                    threshold: float) -> str:
+    """
+    Generate a plain-English sentence explaining the prediction.
+
+    Uses simple rule-based logic on the raw feature values — not SHAP.
+    Fast, deterministic, and requires no additional computation.
+
+    For the full SHAP-based explanation use GET /explain.
+
+    Parameters
+    ----------
+    df          : single-row DataFrame with engineered features
+    probability : predicted churn probability
+    threshold   : decision threshold
+
+    Returns
+    -------
+    str — one sentence explaining the primary risk factor or protective factor
+    """
+    row = df.iloc[0]
+
+    if probability >= threshold:
+        # High risk — identify the biggest risk factor
+        if row['tenure'] <= 6:
+            return (f"Customer has only been with the company for "
+                    f"{int(row['tenure'])} months — new customers have "
+                    f"the highest churn risk.")
+        elif row['Contract'] == 'Month-to-month':
+            return ("Customer is on a month-to-month contract with no "
+                    "lock-in — the single strongest predictor of churn.")
+        elif row['MonthlyCharges'] >= 80:
+            return (f"Customer's monthly bill of ${row['MonthlyCharges']:.0f} "
+                    f"is high — elevated charges are a significant churn driver.")
+        elif row['InternetService'] == 'Fiber optic' and row['num_services'] <= 1:
+            return ("Fiber optic customer with few add-on services — "
+                    "high cost, low switching cost.")
+        else:
+            return (f"Multiple risk factors present — churn probability "
+                    f"is {probability:.0%}.")
+    else:
+        # Low risk — identify the strongest protective factor
+        if row['Contract'] == 'Two year':
+            return ("Customer is on a two-year contract — the strongest "
+                    "protective factor against churn.")
+        elif row['tenure'] >= 36:
+            return (f"Customer has been with the company for "
+                    f"{int(row['tenure'])} months — long tenure is "
+                    f"strongly protective.")
+        elif row['num_services'] >= 4:
+            return (f"Customer subscribes to {int(row['num_services'])} "
+                    f"add-on services — high switching cost reduces churn risk.")
+        else:
+            return (f"Customer profile shows low churn risk "
+                    f"(probability {probability:.0%}).")
 
 def make_prediction(customer: CustomerFeatures) -> PredictionResponse:
     """
     Core prediction logic — shared by single and batch endpoints.
-
-    Parameters
-    ----------
-    customer : validated CustomerFeatures Pydantic model
-
-    Returns
-    -------
-    PredictionResponse with probability, binary prediction, and risk tier
     """
     if not model_module.is_ready():
         raise HTTPException(
@@ -142,25 +198,19 @@ def make_prediction(customer: CustomerFeatures) -> PredictionResponse:
     pipeline  = model_module.get_pipeline()
     threshold = model_module.get_threshold()
 
-    # Convert to DataFrame with engineered features
-    df = customer_to_dataframe(customer)
-
-    # Get churn probability
+    df          = customer_to_dataframe(customer)
     probability = float(pipeline.predict_proba(df)[0, 1])
-
-    # Apply threshold
-    prediction = int(probability >= threshold)
-
-    # Assign risk tier
-    risk_tier = assign_risk_tier(probability, threshold)
+    prediction  = int(probability >= threshold)
+    risk_tier   = assign_risk_tier(probability, threshold)
+    reason      = generate_reason(df, probability, threshold)
 
     return PredictionResponse(
         churn_probability = round(probability, 4),
         prediction        = prediction,
         risk_tier         = risk_tier,
         threshold_used    = threshold,
+        reason            = reason,
     )
-
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
@@ -224,4 +274,115 @@ def predict_batch(request: BatchPredictionRequest):
         high_risk   = high_risk,
         medium_risk = medium_risk,
         low_risk    = low_risk,
+    )
+
+@router.post(
+    '/explain',
+    response_model=ExplanationResponse,
+    summary='Predict with feature-level explanation',
+    description=(
+        'Returns the churn prediction plus the top features '
+        'driving the risk score up or down.'
+    ),
+)
+def explain_prediction(customer: CustomerFeatures):
+    """
+    Score a customer and return a feature-level explanation.
+
+    Uses the model's feature importances weighted by the customer's
+    feature values to approximate which features most influenced
+    this specific prediction.
+
+    For exact SHAP values, use the SHAP analysis notebook.
+    This endpoint provides a fast approximation suitable for
+    real-time dashboard display.
+    """
+    if not model_module.is_ready():
+        raise HTTPException(
+            status_code=503,
+            detail='Model not loaded. Service is not ready.',
+        )
+
+    pipeline  = model_module.get_pipeline()
+    threshold = model_module.get_threshold()
+
+    df          = customer_to_dataframe(customer)
+    probability = float(pipeline.predict_proba(df)[0, 1])
+    prediction  = int(probability >= threshold)
+    risk_tier   = assign_risk_tier(probability, threshold)
+    reason      = generate_reason(df, probability, threshold)
+
+    # ── Compute feature contributions ─────────────────────────────────────────
+    preprocessor   = pipeline.named_steps['preprocessor']
+    model          = pipeline.named_steps['model']
+    X_transformed  = preprocessor.transform(df)
+
+    # Get feature names
+    num_names = [
+        'tenure', 'MonthlyCharges', 'TotalCharges',
+        'charges_per_month', 'num_services',
+    ]
+    try:
+        cat_names = (preprocessor
+                     .named_transformers_['cat']
+                     .get_feature_names_out()
+                     .tolist())
+    except Exception:
+        cat_names = []
+
+    bin_names = [
+        'gender', 'Partner', 'Dependents',
+        'PhoneService', 'PaperlessBilling', 'SeniorCitizen',
+    ]
+    feature_names = num_names + cat_names + bin_names
+
+    # Use model feature importances × transformed feature values
+    # as a fast proxy for SHAP values
+    importances    = model.feature_importances_
+    feature_values = X_transformed[0]
+
+    # Weighted contributions — importance × |feature value|
+    contributions = importances * np.abs(feature_values)
+
+    # Pair with names, sort by contribution magnitude
+    feature_contribs = sorted(
+        zip(feature_names[:len(contributions)],
+            feature_values[:len(contributions)],
+            contributions),
+        key=lambda x: x[2],
+        reverse=True,
+    )
+
+    # Split into risk-increasing and risk-decreasing
+    # Positive scaled value + high importance = increases risk
+    # Negative scaled value + high importance = decreases risk
+    risk_factors   = []
+    protective     = []
+
+    for name, val, contrib in feature_contribs:
+        if len(risk_factors) >= 3 and len(protective) >= 3:
+            break
+        direction = 'increases' if val > 0 else 'decreases'
+        entry = FeatureContribution(
+            feature   = name,
+            value     = round(float(val), 4),
+            direction = direction,
+        )
+        if direction == 'increases' and len(risk_factors) < 3:
+            risk_factors.append(entry)
+        elif direction == 'decreases' and len(protective) < 3:
+            protective.append(entry)
+
+    # Baseline ≈ training set churn rate
+    baseline = 0.265
+
+    return ExplanationResponse(
+        churn_probability   = round(probability, 4),
+        prediction          = prediction,
+        risk_tier           = risk_tier,
+        threshold_used      = threshold,
+        reason              = reason,
+        top_risk_factors    = risk_factors,
+        top_protective      = protective,
+        baseline_probability= baseline,
     )

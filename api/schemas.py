@@ -187,6 +187,8 @@ class PredictionResponse(BaseModel):
                                       description="'High', 'Medium', or 'Low'")
     threshold_used    : float = Field(...,
                                       description="Decision threshold applied")
+    reason            : str   = Field(...,
+                                      description="Plain-English explanation of top risk factor")
 
 
 class BatchPredictionRequest(BaseModel):
@@ -206,3 +208,22 @@ class BatchPredictionResponse(BaseModel):
     high_risk   : int
     medium_risk : int
     low_risk    : int
+
+class FeatureContribution(BaseModel):
+    """A single feature's contribution to a prediction."""
+    feature    : str   = Field(..., description="Feature name")
+    value      : float = Field(..., description="Feature value (scaled)")
+    direction  : str   = Field(..., description="'increases' or 'decreases' churn risk")
+
+
+class ExplanationResponse(BaseModel):
+    """Response schema for POST /explain."""
+    churn_probability  : float
+    prediction         : int
+    risk_tier          : str
+    threshold_used     : float
+    reason             : str
+    top_risk_factors   : list[FeatureContribution]
+    top_protective     : list[FeatureContribution]
+    baseline_probability: float = Field(...,
+                                        description="Model's average prediction (≈ churn rate)")

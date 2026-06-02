@@ -335,3 +335,101 @@ def test_batch_predict_invalid_customer_422(client):
     payload = {'customers': [VALID_CUSTOMER, invalid_customer]}
     response = client.post('/predict/batch', json=payload)
     assert response.status_code == 422
+
+# ── Reason field tests ────────────────────────────────────────────────────────
+
+def test_predict_response_has_reason(client):
+    """Response must include a plain-English reason string."""
+    response = client.post('/predict', json=VALID_CUSTOMER)
+    assert response.status_code == 200
+    data = response.json()
+    assert 'reason' in data
+    assert isinstance(data['reason'], str)
+    assert len(data['reason']) > 10, "Reason string is too short"
+
+
+def test_predict_reason_is_different_for_different_customers(client):
+    """Different customers should get different reason strings."""
+    high_risk_resp = client.post('/predict', json=VALID_CUSTOMER)
+    low_risk_resp  = client.post('/predict', json=LOYAL_CUSTOMER)
+
+    high_reason = high_risk_resp.json()['reason']
+    low_reason  = low_risk_resp.json()['reason']
+
+    assert high_reason != low_reason, \
+        "High-risk and low-risk customers got identical reasons"
+
+
+# ── Explain endpoint tests ────────────────────────────────────────────────────
+
+def test_explain_returns_200(client):
+    response = client.post('/explain', json=VALID_CUSTOMER)
+    assert response.status_code == 200
+
+
+def test_explain_response_structure(client):
+    response = client.post('/explain', json=VALID_CUSTOMER)
+    data = response.json()
+    required_keys = [
+        'churn_probability', 'prediction', 'risk_tier',
+        'threshold_used', 'reason', 'top_risk_factors',
+        'top_protective', 'baseline_probability',
+    ]
+    for key in required_keys:
+        assert key in data, f"Missing key: {key}"
+
+
+def test_explain_feature_contributions_structure(client):
+    """Each feature contribution must have feature, value, direction."""
+    response = client.post('/explain', json=VALID_CUSTOMER)
+    data = response.json()
+
+    for contrib in data['top_risk_factors'] + data['top_protective']:
+        assert 'feature'   in contrib
+        assert 'value'     in contrib
+        assert 'direction' in contrib
+        assert contrib['direction'] in ('increases', 'decreases'), \
+            f"Invalid direction: {contrib['direction']}"
+
+
+def test_explain_baseline_is_reasonable(client):
+    """Baseline probability should be close to the training churn rate."""
+    response = client.post('/explain', json=VALID_CUSTOMER)
+    baseline = response.json()['baseline_probability']
+    assert 0.20 <= baseline <= 0.35, \
+        f"Baseline {baseline} is far from expected churn rate ~0.265"
+
+
+def test_explain_probability_matches_predict(client):
+    """
+    /explain and /predict must return the same probability
+    for the same customer.
+    """
+    predict_resp = client.post('/predict',  json=VALID_CUSTOMER)
+    explain_resp = client.post('/explain',  json=VALID_CUSTOMER)
+
+    predict_prob = predict_resp.json()['churn_probability']
+    explain_prob = explain_resp.json()['churn_probability']
+
+    assert predict_prob == explain_prob, \
+        f"/predict ({predict_prob}) and /explain ({explain_prob}) disagree"
+
+
+def test_explain_invalid_input_422(client):
+    """Invalid input to /explain should return 422."""
+    invalid = {**VALID_CUSTOMER, 'tenure': -1}
+    response = client.post('/explain', json=invalid)
+    assert response.status_code == 422
+
+
+# ── Logging middleware test ───────────────────────────────────────────────────
+
+def test_request_completes_successfully(client):
+    """
+    Smoke test — verify the full request cycle completes without error.
+    Tests that middleware doesn't interfere with normal requests.
+    """
+    for endpoint in ['/health', '/model-info']:
+        response = client.get(endpoint)
+        assert response.status_code == 200, \
+            f"Endpoint {endpoint} failed with {response.status_code}"
