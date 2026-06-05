@@ -1,0 +1,15 @@
+﻿version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: churn-api:latest
+    container_name: churn-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MLFLOW_TRACKING_URI=sqlite:///mlflow.db
+      - PYTHONPATH=/app
+    restart: unless-stopped
