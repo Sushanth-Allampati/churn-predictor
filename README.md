@@ -41,6 +41,10 @@
 ## API
 
 The churn prediction model is served as a REST API built with FastAPI.
+## Live Demo
+
+- **API** : https://churn-predictor-api.onrender.com
+- **Docs** : https://churn-predictor-api.onrender.com/docs
 
 ### Running locally
 
