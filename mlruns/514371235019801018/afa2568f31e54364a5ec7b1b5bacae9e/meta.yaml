@@ -1,0 +1,14 @@
+artifact_uri: file:C:/Users/Lenovo/churn-predictor/mlruns/514371235019801018/afa2568f31e54364a5ec7b1b5bacae9e/artifacts
+end_time: 1779514674568
+entry_point_name: ''
+experiment_id: '514371235019801018'
+lifecycle_stage: active
+run_id: afa2568f31e54364a5ec7b1b5bacae9e
+run_name: dashing-calf-770
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1779514672748
+status: 4
+tags: []
+user_id: Lenovo

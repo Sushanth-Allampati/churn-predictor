@@ -1,0 +1,8 @@
+artifact_location: file:C:/Users/Lenovo/churn-predictor/mlruns/514371235019801018
+creation_time: 1779514671760
+experiment_id: '514371235019801018'
+last_update_time: 1779514671760
+lifecycle_stage: active
+name: baseline
+trace_location: null
+workspace: default

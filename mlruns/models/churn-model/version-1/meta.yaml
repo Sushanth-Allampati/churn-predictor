@@ -1,0 +1,16 @@
+creation_timestamp: 1779514806295
+current_stage: None
+deployment_job_state: null
+description: null
+last_updated_timestamp: 1779514806295
+model_id: m-19e03be60f82457cb4d1242af62efaf2
+name: churn-model
+run_id: 9270fe709f274caa930b71b84b036dd2
+run_link: null
+source: models:/m-19e03be60f82457cb4d1242af62efaf2
+status: READY
+status_message: null
+storage_location: file:C:/Users/Lenovo/churn-predictor/mlruns/514371235019801018/models/m-19e03be60f82457cb4d1242af62efaf2/artifacts
+user_id: null
+version: 1
+workspace: default
