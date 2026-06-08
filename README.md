@@ -22,9 +22,9 @@
 
 # \## Live Demo
 
-# \- API: \*(link after deployment)\*
+# \- API: \*(https://churn-predictor-api-gonj.onrender.com/docs)\*
 
-# \- Dashboard: \*(link after deployment)\*
+# \- Dashboard: \*(https://churn-predictor-2026.streamlit.app/)\*
 
 # 
 
@@ -43,8 +43,15 @@
 The churn prediction model is served as a REST API built with FastAPI.
 ## Live Demo
 
-- **API** : https://churn-predictor-api.onrender.com
-- **Docs** : https://churn-predictor-api.onrender.com/docs
+| Service | URL |
+|---|---|
+| 🚀 API | https://churn-predictor-api-gonj.onrender.com |
+| 📊 Dashboard | https://churn-predictor-2026.streamlit.app/ |
+| 📖 API Docs | https://churn-predictor-api-gonj.onrender.com/docs |
+
+> **Note:** The API runs on a free tier and may take 30-60 seconds
+> to wake up after inactivity. The dashboard will show a timeout
+> message — just click Predict again after waiting.
 
 ### Running locally
 

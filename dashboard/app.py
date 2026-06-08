@@ -27,6 +27,13 @@ st.set_page_config(
     layout     = 'wide',
 )
 
+with st.sidebar:
+    st.markdown('---')
+    st.caption(
+        '⚠️ The API runs on a free server that sleeps after '
+        '15 minutes of inactivity. First request may take '
+        '30-60 seconds to wake up.'
+    )
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
