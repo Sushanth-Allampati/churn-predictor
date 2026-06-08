@@ -9,7 +9,7 @@ Two pages:
 
 Calls the live FastAPI backend at API_URL.
 """
-
+import requests
 import json
 import urllib.request
 import urllib.error
@@ -32,28 +32,37 @@ st.set_page_config(
 
 def api_post(endpoint: str, data: dict):
     """POST to the API and return the response dict."""
-    url  = f'{API_URL}{endpoint}'
-    body = json.dumps(data).encode()
-    req  = urllib.request.Request(
-        url, data=body,
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read()), None
-    except urllib.error.HTTPError as e:
-        return None, f"API error {e.code}: {e.read().decode()}"
+        response = requests.post(
+            f'{API_URL}{endpoint}',
+            json=data,
+            timeout=60,
+        )
+        if response.status_code == 200:
+            return response.json(), None
+        else:
+            return None, f"API error {response.status_code}: {response.text}"
+    except requests.exceptions.Timeout:
+        return None, "Request timed out — API may be waking up, try again in 30s"
+    except requests.exceptions.ConnectionError:
+        return None, "Could not connect to API"
     except Exception as e:
         return None, str(e)
 
 
 def api_get(endpoint: str):
     """GET from the API and return the response dict."""
-    url = f'{API_URL}{endpoint}'
     try:
-        with urllib.request.urlopen(url, timeout=30) as r:
-            return json.loads(r.read()), None
+        response = requests.get(
+            f'{API_URL}{endpoint}',
+            timeout=60,
+        )
+        if response.status_code == 200:
+            return response.json(), None
+        else:
+            return None, f"API error {response.status_code}: {response.text}"
+    except requests.exceptions.Timeout:
+        return None, "Request timed out — API may be waking up, try again in 30s"
     except Exception as e:
         return None, str(e)
 
