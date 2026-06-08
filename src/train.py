@@ -346,7 +346,6 @@ def _build_lr():
     model = LogisticRegression(
         **params,
         random_state = 42,
-        n_jobs       = -1,
     )
     return model, params
 
