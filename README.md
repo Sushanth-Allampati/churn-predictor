@@ -1,3 +1,4 @@
+![CI](https://github.com/Sushanth-Allampati/churn-predictor/actions/workflows/ci.yml/badge.svg)
 # \# Customer Churn Predictor
 
 # 
@@ -22,9 +23,9 @@
 
 # \## Live Demo
 
-# \- API: \*(https://churn-predictor-api-gonj.onrender.com/docs)\*
+# \- API: \*https://churn-predictor-api-gonj.onrender.com/docs\*
 
-# \- Dashboard: \*(https://churn-predictor-2026.streamlit.app/)\*
+# \- Dashboard: \*https://churn-predictor-2026.streamlit.app/\*
 
 # 
 
