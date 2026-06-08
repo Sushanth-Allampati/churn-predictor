@@ -174,7 +174,7 @@ def run_tuning(model_name: str, n_trials: int, experiment_name: str):
     mlflow.set_experiment(experiment_name)
 
     # ── 4. Run study inside a parent MLflow run ───────────────────────────────
-    with mlflow.start_run(run_name=f'{display_name}_optuna_{n_trials}trials') as parent_run:
+    with mlflow.start_run(run_name=f'{display_name}_optuna_{n_trials}trials'):
 
         mlflow.log_param('model',    display_name)
         mlflow.log_param('n_trials', n_trials)
