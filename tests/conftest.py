@@ -47,7 +47,7 @@ def create_ci_model():
 
 
 def setup_ci_artifacts():
-    """Create model artifacts needed for API tests in CI."""
+    """Create model artifacts needed for API tests and Docker build in CI."""
 
     os.makedirs('models', exist_ok=True)
 
@@ -90,11 +90,14 @@ def setup_ci_artifacts():
             json.dump(metrics, f, indent=2)
         print("  models/test_metrics.json created")
 
-    # Create mlflow.db if missing (empty is fine)
+    # Create mlflow.db if missing
     if not os.path.exists('mlflow.db'):
         open('mlflow.db', 'w').close()
         print("  mlflow.db created (empty)")
 
+    print("setup_ci_artifacts() complete")
 
-# Run setup when conftest is loaded
-setup_ci_artifacts()
+
+if __name__ == '__main__':
+    setup_ci_artifacts()
+
