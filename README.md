@@ -1,5 +1,6 @@
 ![CI](https://github.com/Sushanth-Allampati/churn-predictor/actions/workflows/ci.yml/badge.svg)
-# \# Customer Churn Predictor
+
+# Customer Churn Predictor
 
 # 
 
