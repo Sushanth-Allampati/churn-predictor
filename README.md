@@ -28,12 +28,7 @@
 
 # \- Dashboard: https://churn-predictor-2026.streamlit.app/
 
-# 
-
-# Getting Started
-
-# \*(to be filled in)\*
-
+#
 
 # API
 
