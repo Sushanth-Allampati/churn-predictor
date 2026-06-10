@@ -16,9 +16,18 @@
 
 # 
 
-# Results
+## Results
 
-# \*(to be filled in after training)\*
+| Metric | Value |
+|----------|----------|
+| ROC-AUC | 0.84 |
+| Models Evaluated | 3 |
+| Optuna Trials | 50+ |
+| MLflow Runs | 300+ |
+| Automated Tests | 70+ |
+| API Endpoints | 5 |
+| Deployment | Render |
+| Explainability | SHAP |
 
 # 
 
