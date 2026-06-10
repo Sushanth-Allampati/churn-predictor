@@ -1,5 +1,0 @@
-outs:
-- md5: e9d3afd0f9fa50b70a27e5f15d9bcdc4
-  size: 316
-  hash: md5
-  path: threshold_config.json
