@@ -10,7 +10,7 @@
 
 # 
 
-#  Stack
+# Stack
 
 # Python · scikit-learn · XGBoost · MLflow · FastAPI · Docker · Streamlit
 
@@ -24,9 +24,9 @@
 
 # Live Demo
 
-# \- API: \*https://churn-predictor-api-gonj.onrender.com/docs\*
+# \- API: https://churn-predictor-api-gonj.onrender.com/docs
 
-# \- Dashboard: \*https://churn-predictor-2026.streamlit.app/\*
+# \- Dashboard: https://churn-predictor-2026.streamlit.app/
 
 # 
 
