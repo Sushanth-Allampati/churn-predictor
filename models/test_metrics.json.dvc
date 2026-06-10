@@ -1,0 +1,5 @@
+outs:
+- md5: 6bd2dc144cfc0240b5558a1b018d98e5
+  size: 127
+  hash: md5
+  path: test_metrics.json
