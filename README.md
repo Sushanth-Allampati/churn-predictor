@@ -10,7 +10,7 @@
 
 # 
 
-# \ Stack
+#  Stack
 
 # Python · scikit-learn · XGBoost · MLflow · FastAPI · Docker · Streamlit
 
