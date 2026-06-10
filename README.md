@@ -16,13 +16,13 @@
 
 # 
 
-# \## Results
+# Results
 
 # \*(to be filled in after training)\*
 
 # 
 
-# \## Live Demo
+# Live Demo
 
 # \- API: \*https://churn-predictor-api-gonj.onrender.com/docs\*
 
@@ -30,20 +30,15 @@
 
 # 
 
-# \## Getting Started
+# Getting Started
 
 # \*(to be filled in)\*
 
-# 
 
-# \## What I'd improve with more time
-
-# \*(to be filled in)\*
-
-## API
+# API
 
 The churn prediction model is served as a REST API built with FastAPI.
-## Live Demo
+# Live Demo
 
 | Service | URL |
 |---|---|
@@ -55,7 +50,7 @@ The churn prediction model is served as a REST API built with FastAPI.
 > to wake up after inactivity. The dashboard will show a timeout
 > message — just click Predict again after waiting.
 
-### Running locally
+# Running locally
 
 ```bash
 uvicorn api.main:app --reload --port 8000
@@ -63,7 +58,7 @@ uvicorn api.main:app --reload --port 8000
 
 Visit `http://localhost:8000/docs` for the interactive Swagger UI.
 
-### Endpoints
+# Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -73,7 +68,7 @@ Visit `http://localhost:8000/docs` for the interactive Swagger UI.
 | POST | `/predict/batch` | Score up to 1000 customers |
 | POST | `/explain` | Score with feature-level explanation |
 
-### Example request
+# Example request
 
 ```bash
 curl -X POST http://localhost:8000/predict \
@@ -101,7 +96,7 @@ curl -X POST http://localhost:8000/predict \
   }'
 ```
 
-### Example response
+# Example response
 
 ```json
 {
